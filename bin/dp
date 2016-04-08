@@ -1,14 +1,27 @@
 #!/usr/bin/env python
 
 import getpass
+import getopt
 import os.path
 import re
 import socket
 import subprocess
+import sys
 import termcolor
 import yaml
 
 def main():
+    # support increasing ansible verbosity flags (-v thru -vvvv)
+    verbosity = None
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], 'v')
+        if 0 < len(opts) < 5:
+            verbosity = '-%s' % ('v' * len(opts))
+        elif len(opts) > 4:
+            verbosity = '-vvvv'
+    except getopt.GetoptError as err:
+        pass
+
     # get hostname...
     hostname = single_input('Hostname or IP Address', lambda h: h and socket.gethostbyname(h))
 
@@ -27,9 +40,9 @@ def main():
         try:
             call([
                 'ansible', 'all',
+                verbosity,
                 '-i', inventory_path,
-                '-m', 'ping',
-                '-vvvv'
+                '-m', 'ping'
             ])
         except:
             # failing that, prompt to start fresh
@@ -60,13 +73,14 @@ def main():
         if auth_method == 'keyfile':
             auth_flag = '--private-key=%s' % keyfile
         else:
-            auth_flag = '--'
+            auth_flag = None
 
         # when using keyfile, check if sudo password is needed
         if auth_method == 'keyfile':
             try:
                 call([
                     'ansible', 'all',
+                    verbosity,
                     '-i', './inventory/%s' % hostaddr,
                     '-m', 'shell',
                     '-a', '"sudo id"',
@@ -96,10 +110,12 @@ def main():
             call([
                 'env', 'ANSIBLE_HOST_KEY_CHECKING=False',
                 'ansible-playbook',
+                verbosity,
                 '-i', inventory_path,
                 '-u', username,
                 '-e', "deploy_ssh_public_key=%s.pub" % keypair_path,
                 auth_flag,
+                '--',
                 './init.yml'
             ])
         except:
@@ -135,6 +151,7 @@ def main():
     announce("Hardening server")
     call([
         'ansible-playbook',
+        verbosity,
         '-i', inventory_path,
         '--',
         './harden.yml'
@@ -148,6 +165,7 @@ def announce(message):
     print termcolor.colored("\n! %s" % message, 'green')
 
 def call(commands):
+    commands = filter(lambda a: a != None, commands)
     print termcolor.colored("$ %s\n" % ' '.join(commands), 'yellow')
     return subprocess.check_call(commands)
 
