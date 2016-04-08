@@ -1,0 +1,19 @@
+---
+- hosts: all
+  sudo: "{{ 'no' if ansible_user_id == 'root' else 'yes' }}"
+  tasks:
+    - name: Add deploy user
+      user:
+        name: deploy
+        shell: /bin/bash
+
+    - name: Add authorized key for deploy user
+      authorized_key:
+        user: deploy
+        key: "{{ lookup('file', deploy_ssh_public_key) }}"
+
+    - name: Add deploy user to sudoers
+      copy:
+        content: "deploy ALL=(ALL) NOPASSWD:ALL"
+        dest: /etc/sudoers.d/deploy
+        mode: 0440

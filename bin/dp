@@ -1,0 +1,182 @@
+#!/usr/bin/env python
+
+import os.path
+import re
+import socket
+import subprocess
+import termcolor
+import yaml
+
+def main():
+    # get hostname...
+    hostname = single_input('Hostname or IP Address', lambda h: h and socket.gethostbyname(h))
+
+    # and resolve to ip as necessary
+    hostaddr = socket.gethostbyname(hostname)
+    if hostname != hostaddr:
+        announce("Resolved to %s" % hostaddr)
+
+    # translate hostaddr to file paths
+    inventory_path = "./inventory/%s" % hostaddr
+    keypair_path = "./files/ssh/%s" % hostaddr
+    hostvars_path = "./host_vars/%s" % hostaddr
+
+    # with existing inventory, test that we can connect...
+    if os.path.isfile(inventory_path):
+        try:
+            call([
+                'ansible', 'all',
+                '-i', inventory_path,
+                '-m', 'ping',
+                '-vvvv'
+            ])
+        except:
+            # failing that, prompt to start fresh
+            announce("Existing inventory for %s has failed to connect" % hostaddr)
+            rebuild_inv = single_input('Rebuild from scratch? y/n', lambda p: 'y' in p.lower() or 'n' in p.lower())
+            if 'y' in rebuild_inv.lower():
+                os.remove(inventory_path)
+                os.remove(keypair_path)
+                os.remove("%s.pub" % keypair_path)
+                os.remove(hostvars_path)
+
+    # without existing inventory, prompt for credentials and setup passwordless deploy
+    if not os.path.isfile(inventory_path):
+        username = single_input('Username', lambda u: re.match(r"^[a-z_][a-z0-9_-]*[$]?", u, re.I))
+        auth_method = multi_input("How will we authenticate as %s" % username, ['password', 'keyfile'])
+
+        if auth_method == 'keyfile':
+            keyfile = single_input('Path to keyfile for %s' % username, os.path.exists)
+
+        # ask whether sudo password is necessary, since ansible may need it
+        if username == 'root':
+            sudo_ask = 'n'
+        else:
+            sudo_ask = single_input('Does %s need a password for sudo access? y/n' % username, lambda p: 'y' in p.lower() or 'n' in p.lower())
+
+        # generate deploy keypair, presuming one doesnt exist
+        announce("Generating ssh keypair for `deploy` user...")
+        call([
+            'ssh-keygen',
+            '-t', 'rsa',
+            '-b', '4096',
+            '-C', '"deploy@%s"' % hostaddr,
+            '-f', keypair_path,
+            '-q',
+            '-N', ''
+        ])
+
+        # create bare inventory file for initial connection
+        with open(inventory_path, "w") as inventory:
+            inventory.write(hostaddr)
+
+        # determine flags for initial authorization method
+        if auth_method == 'keyfile':
+            auth_flag = '--private-key=%s' % keyfile
+        else:
+            auth_flag = '-k'
+
+        if sudo_ask == 'n':
+            sudo_flag = '--'
+        else:
+            sudo_flag = '-K'
+
+        # initial connect + setup via ansible
+        announce("Testing connection and setting up passwordless `deploy` user")
+        try:
+            call([
+                'ansible-playbook',
+                '-i', inventory_path,
+                '-u', username,
+                '-e', "deploy_ssh_public_key=%s.pub" % keypair_path,
+                auth_flag,
+                sudo_flag,
+                './init.yml'
+            ])
+        except:
+            # cleanup + bail in case of failure
+            os.remove(inventory_path)
+            os.remove(keypair_path)
+            os.remove("%s.pub" % keypair_path)
+            raise
+
+        # create inventory file for passwordless deploy connection
+        with open(inventory_path, "w") as inventory:
+            inventory.write("%s ansible_ssh_user=deploy ansible_ssh_private_key_file=%s" % (hostaddr, keypair_path))
+
+    # load any existing ports from host_vars, or start with defaults
+    if os.path.exists(hostvars_path):
+        with open (hostvars_path, "r") as hostvars:
+            ports = yaml.load(hostvars)["custom_ports"]
+    else:
+        ports = { "80": "tcp", "443": "tcp" }
+
+    # prompt for addtl ports/protocols, and save as host_vars
+    announce("Opening these ports:%s" % ''.join(map(lambda p: "\n   %s on %s" % (p[0],p[1]), ports.iteritems())))
+    custom_ports = single_input("Add additional ports, space delimited (or hit ENTER)", lambda s: not s or re.match(r'^([a-z0-9]+)([ ]+([a-z0-9]+))*$', s, re.I))
+
+    if custom_ports:
+        for port in custom_ports.split(' '):
+            ports[port] = multi_input("Protocol for port %s" % port, ['tcp', 'udp', 'any'])
+
+    with open(hostvars_path, "w") as hostvars:
+        hostvars.write(yaml.dump({"custom_ports": ports}, default_flow_style=False))
+
+    # run hardening playbook
+    announce("Hardening server")
+    call([
+        'ansible-playbook',
+        '-i', inventory_path,
+        '--',
+        './harden.yml'
+    ])
+
+    # and we're golden
+    announce("Done! Further ssh access will require a keyfile:\n\tssh -i %s deploy@%s" % (keypair_path, hostaddr))
+    announce("Now, go install the Docker Cloud agent:\n\thttps://docs.docker.com/docker-cloud/tutorials/byoh/")
+
+def announce(message):
+    print termcolor.colored("\n! %s" % message, 'green')
+
+def call(commands):
+    print termcolor.colored("$ %s\n" % ' '.join(commands), 'yellow')
+    return subprocess.check_call(commands)
+
+def single_input(prompt, cb):
+    built_prompt = "\n? %s: " % prompt
+    while True:
+        result = raw_input(termcolor.colored(built_prompt, 'cyan'))
+
+        try:
+            if cb(result):
+                return result
+        except:
+            pass
+
+def multi_input(prompt, choices):
+    built_prompt = termcolor.colored("\n? %s:\n" % prompt, 'cyan')
+
+    for i, choice in enumerate(choices):
+        choices[i] = choice.lower()
+        built_prompt += " %s %s\n" % (
+            termcolor.colored("[%i]" % (i+1), 'grey', 'on_cyan'),
+            termcolor.colored(choice.lower(), 'cyan')
+        )
+
+    built_prompt += termcolor.colored("> ", 'cyan')
+
+    while True:
+        result = raw_input(built_prompt)
+
+        try:
+            test_index = int(result)
+            if 1 <= test_index <= len(choices):
+                return choices[test_index-1]
+        except (ValueError, IndexError, TypeError):
+            pass
+
+        if result.lower() in choices:
+            return result.lower()
+
+if __name__ == "__main__":
+    main()

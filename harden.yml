@@ -1,0 +1,106 @@
+---
+- hosts: all
+  sudo: yes
+  vars:
+    installed_packages:
+      - ufw
+      - fail2ban
+      - unattended-upgrades
+      - curl
+      - vim
+
+    docker_ports:
+      6783: any
+      2375: tcp
+
+  handlers:
+    - name: restart ssh
+      service: name=ssh state=restarted
+
+    - name: restart procps
+      service: name=procps state=restarted
+
+  tasks:
+    # Up to date and unattended package management
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade apt to the latest packages
+      apt:
+        upgrade: safe
+
+    - name: Ensure installed apt packages
+      apt:
+        state: installed
+        pkg: "{{ item }}"
+      with_items: installed_packages
+
+    - name: Autoremove unused apt packages
+      command: apt-get -y autoremove
+      register: autoremove_output
+      changed_when: "'The following packages will be REMOVED' in autoremove_output.stdout"
+
+    - name: Adjust apt update intervals
+      copy:
+        src: files/apt_periodic
+        dest: /etc/apt/apt.conf.d/10periodic
+
+    # Network locked down by default
+    - name: Improve ip security
+      copy:
+        src: files/sysctl_netsec
+        dest: /etc/sysctl.d/10-network-security.conf
+      notify: restart procps
+
+    - name: Setup ufw to deny everything by default
+      ufw:
+        state: enabled
+        policy: deny
+
+    # Punch holes for needed ports/protocols
+    - name: Allow (rate limited) ssh traffic
+      ufw:
+        rule: limit
+        port: 22
+        proto: tcp
+
+    - name: Open docker cloud agent ports
+      ufw:
+        rule: allow
+        port: "{{ item.key }}"
+        proto: "{{ item.value }}"
+      with_dict: docker_ports
+
+    - name: Open custom ports
+      ufw:
+        rule: allow
+        port: "{{ item.key }}"
+        proto: "{{ item.value }}"
+      with_dict: custom_ports
+
+    # Lock down SSH
+    - name: Disallow ssh password authentication
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: "^PasswordAuthentication"
+        line: "PasswordAuthentication no"
+        state: present
+      notify: restart ssh
+
+    - name: Disallow root ssh access
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: "^PermitRootLogin"
+        line: "PermitRootLogin no"
+        state: present
+      notify: restart ssh
+
+    - name: Disallow x11 forwarding
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: "^X11Forwarding"
+        line: "X11Forwarding no"
+        state: present
+      notify: restart ssh
