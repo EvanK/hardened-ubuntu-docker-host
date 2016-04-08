@@ -1,6 +1,6 @@
 ---
 - hosts: all
-  sudo: "{{ 'no' if ansible_user_id == 'root' else 'yes' }}"
+  sudo: yes
   tasks:
     - name: Add deploy user
       user:

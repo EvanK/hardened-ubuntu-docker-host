@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import getpass
 import os.path
 import re
 import socket
@@ -43,16 +44,39 @@ def main():
     # without existing inventory, prompt for credentials and setup passwordless deploy
     if not os.path.isfile(inventory_path):
         username = single_input('Username', lambda u: re.match(r"^[a-z_][a-z0-9_-]*[$]?", u, re.I))
-        auth_method = multi_input("How will we authenticate as %s" % username, ['password', 'keyfile'])
+        auth_method = multi_input("How will we authenticate as `%s`" % username, ['password', 'keyfile'])
 
         if auth_method == 'keyfile':
-            keyfile = single_input('Path to keyfile for %s' % username, os.path.exists)
-
-        # ask whether sudo password is necessary, since ansible may need it
-        if username == 'root':
-            sudo_ask = 'n'
+            keyfile = single_input('Path to keyfile for `%s`' % username, os.path.exists)
         else:
-            sudo_ask = single_input('Does %s need a password for sudo access? y/n' % username, lambda p: 'y' in p.lower() or 'n' in p.lower())
+            password = password_input('Password for `%s`' % username)
+
+        # create bare inventory file for initial connection
+        with open(inventory_path, "w") as inventory:
+            extravars = '' if auth_method == 'keyfile' else "ansible_ssh_pass=%s ansible_sudo_pass=%s" % (password, password)
+            inventory.write("%s %s" % (hostaddr, extravars))
+
+        # determine flags for initial authorization method
+        if auth_method == 'keyfile':
+            auth_flag = '--private-key=%s' % keyfile
+        else:
+            auth_flag = '--'
+
+        # when using keyfile, check if sudo password is needed
+        if auth_method == 'keyfile':
+            try:
+                call([
+                    'ansible', 'all',
+                    '-i', './inventory/%s' % hostaddr,
+                    '-m', 'shell',
+                    '-a', '"sudo id"',
+                    auth_flag
+                ])
+            except:
+                # prompt for sudo password + append to inventory
+                password = password_input('Sudo password needed for `%s`' % username)
+                with open(inventory_path, "a") as inventory:
+                    inventory.write("ansible_sudo_pass=%s" % password)
 
         # generate deploy keypair, presuming one doesnt exist
         announce("Generating ssh keypair for `deploy` user...")
@@ -66,31 +90,16 @@ def main():
             '-N', ''
         ])
 
-        # create bare inventory file for initial connection
-        with open(inventory_path, "w") as inventory:
-            inventory.write(hostaddr)
-
-        # determine flags for initial authorization method
-        if auth_method == 'keyfile':
-            auth_flag = '--private-key=%s' % keyfile
-        else:
-            auth_flag = '-k'
-
-        if sudo_ask == 'n':
-            sudo_flag = '--'
-        else:
-            sudo_flag = '-K'
-
         # initial connect + setup via ansible
         announce("Testing connection and setting up passwordless `deploy` user")
         try:
             call([
+                'env', 'ANSIBLE_HOST_KEY_CHECKING=False',
                 'ansible-playbook',
                 '-i', inventory_path,
                 '-u', username,
                 '-e', "deploy_ssh_public_key=%s.pub" % keypair_path,
                 auth_flag,
-                sudo_flag,
                 './init.yml'
             ])
         except:
@@ -177,6 +186,10 @@ def multi_input(prompt, choices):
 
         if result.lower() in choices:
             return result.lower()
+
+def password_input(prompt):
+    built_prompt = "\n\a? %s: " % prompt
+    return getpass.getpass(termcolor.colored(built_prompt, 'white', 'on_blue'))
 
 if __name__ == "__main__":
     main()

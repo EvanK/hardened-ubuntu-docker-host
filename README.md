@@ -25,7 +25,7 @@ Run the script, and follow the prompts:
 
 It will ask you for a hostname (which will be resolved to an ip address) and valid ssh credentials.
 
-An initial connection is made as the provided user, and a `deploy` user is set up with private key access. **You may be prompted for an ssh and/or sudo password.**
+An initial connection is made as the provided user, and a `deploy` user is set up with private key access. **You may be prompted for a sudo password, or to accept an RSA fingerprint.**
 
 Next, you'll be prompted for any custom ports (and corresponding protocols) to open in the firewall.
 
@@ -46,6 +46,12 @@ From here, you can connect as the `deploy` user, with a keypair found in `files/
 ssh -i ./files/ssh/192.168.33.10 deploy@192.168.33.10
 ```
 
+I'd recommend keeping the created files specific to your server, for later invocations of the script.
+
+* keypairs in `files/ssh/`
+* inventories in `inventory/`
+* host variables in `host_vars/`
+
 ### Opening new ports
 
 If you need another port exposed, simply run the script again and specify the hostname (or ip address):
@@ -56,7 +62,7 @@ If you need another port exposed, simply run the script again and specify the ho
 ? Hostname or IP Address: 
 ```
 
-It will detect your existing ssh keys, as well as ansible inventory and host variables. Follow the prompts, and add any new ports.
+It will detect your existing ssh keys, as well as ansible inventories and host variables. Follow the prompts, and add any new ports.
 
 ```
 ! Opening these ports:
