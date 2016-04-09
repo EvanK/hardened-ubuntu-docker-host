@@ -3,6 +3,7 @@
 import getpass
 import getopt
 import os.path
+import pipes
 import re
 import socket
 import subprocess
@@ -104,11 +105,23 @@ def main():
             '-N', ''
         ])
 
+        # disable host key checking temporarily, and only if necessary
+        hostkey_checking = env_prefix = env_postfix = None
+        if auth_method == 'password':
+            hostkey_checking = bg_call(
+                ['ssh-keygen', '-H', '-F', hostaddr],
+                ['grep', hostaddr]
+            )
+
+            if hostkey_checking:
+                env_prefix = 'env'
+                env_postfix = 'ANSIBLE_HOST_KEY_CHECKING=False'
+
         # initial connect + setup via ansible
         announce("Testing connection and setting up passwordless `deploy` user")
         try:
             call([
-                'env', 'ANSIBLE_HOST_KEY_CHECKING=False',
+                env_prefix, env_postfix,
                 'ansible-playbook',
                 verbosity,
                 '-i', inventory_path,
@@ -124,6 +137,9 @@ def main():
             os.remove(keypair_path)
             os.remove("%s.pub" % keypair_path)
             raise
+
+        if hostkey_checking:
+            bg_call(['ssh-keygen', '-R', hostaddr])
 
         # create inventory file for passwordless deploy connection
         with open(inventory_path, "w") as inventory:
@@ -164,10 +180,28 @@ def main():
 def announce(message):
     print termcolor.colored("\n! %s" % message, 'green')
 
-def call(commands):
-    commands = filter(lambda a: a != None, commands)
-    print termcolor.colored("$ %s\n" % ' '.join(commands), 'yellow')
-    return subprocess.check_call(commands)
+def call(*args):
+    command = _normalize_commands(args)
+    print termcolor.colored("$ %s\n" % command, 'yellow')
+    return subprocess.check_call(command, shell=True)
+
+def bg_call(*args):
+    command = _normalize_commands(args)
+    return subprocess.call(command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+def _normalize_commands(args):
+    groups = []
+
+    for command in args:
+        # remove any None args
+        command = filter(lambda a: a != None, command)
+        # quote each arg for shell metacharacters
+        command = map(pipes.quote, command)
+        # flatten args to string command
+        groups.append(' '.join(command))
+
+    # flatten commands to pipe chain
+    return ' | '.join(groups)
 
 def single_input(prompt, cb):
     built_prompt = "\n? %s: " % prompt
