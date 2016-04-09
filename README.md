@@ -71,3 +71,7 @@ It will detect your existing ssh keys, as well as ansible inventories and host v
 
 ? Add additional ports, space delimited (or hit ENTER): 3306
 ```
+
+### Known issues
+
+When connecting with a keyfile, ansible will in some cases require a sudo password regardless of whether the user _has_ passwordless sudo access. I've even seen this happen when connecting as `root`.
